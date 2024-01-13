@@ -24,7 +24,9 @@ jobs:
           sudo apt-get install -y libsdl2-2.0-0
 
       - name: Download and configure Arduino CLI
-        run: sh ./setup.sh
+        run: |
+          cd teensy
+          sh ./setup.sh
         
       - name: Compile main firmware binary [clean build in /build/ dir]
         run: |
