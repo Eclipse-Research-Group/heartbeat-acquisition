@@ -9,5 +9,5 @@ curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.
 # install Teensy core
 ./bin/arduino-cli core install teensy:avr --additional-urls https://www.pjrc.com/teensy/package_teensy_index.json
 
-# we need 
-./bin/arduino-cli compile --fqbn teensy:avr:teensy40
+# install arduino packages
+./bin/arduino-cli lib install TinyGPSPlus@1.0.3
