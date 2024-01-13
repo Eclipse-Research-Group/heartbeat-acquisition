@@ -24,8 +24,10 @@ volatile unsigned int sample_count = 0;
 volatile bool data_ready = false;
 bool pps_start = false;
 
-// Serial outputs
+// GPS serial port
 #define GPSSerial Serial2
+
+// Serial port to raspberry pi
 #define AcqSerial Serial
 
 bool toggle = false;
