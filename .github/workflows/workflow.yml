@@ -19,7 +19,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
 
-      # Runs a single command using the runners shell
       - name: Install required software
         run: |
           sudo apt-get update -y
@@ -30,7 +29,7 @@ jobs:
         run: |
           sh ./setup.sh
         
-      - name: Compile main firmware binary [clean build in /build/ dir]
+      - name: Compile firmware for Teensy 4.0
         run: |
           rm -rf build
           FQBN_ARG="-b teensy:avr:teensy40:usb=serial,speed=600,opt=o2std,keys=en-us"
