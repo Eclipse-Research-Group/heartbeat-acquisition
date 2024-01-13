@@ -10,6 +10,9 @@ jobs:
   # This workflow contains a single job called "build"
   build_teensy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./teensy
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
@@ -25,7 +28,6 @@ jobs:
 
       - name: Download and configure Arduino CLI
         run: |
-          cd teensy
           sh ./setup.sh
         
       - name: Compile main firmware binary [clean build in /build/ dir]
