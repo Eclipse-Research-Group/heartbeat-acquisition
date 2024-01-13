@@ -8,12 +8,11 @@
 #define PIN_LED_GPSSYNC 6
 #define PIN_LED_XMIT 6
 #define PIN_ANALOG_IN 0
-#define SAMPLE_RATE 44100
+#define SAMPLE_RATE 20000
 #define PIN_GPS_RX 7
 #define PIN_GPS_TX 8
 #define SAMPLE_SIZE 1000
 const int SAMPLE_TIME_US = 1000000/SAMPLE_RATE;
-// #define SAMPLE_SIZE 1000
 
 // GPS objects
 TinyGPSPlus gps;
