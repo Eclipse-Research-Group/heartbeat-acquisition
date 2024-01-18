@@ -1,5 +1,6 @@
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
+#include <Adafruit_GPS.h>
 
 
 // Constants
@@ -26,9 +27,10 @@ bool pps_start = false;
 
 // GPS serial port
 #define GPSSerial Serial2
+Adafruit_GPS GPS(&GPSSerial);
 
 // Serial port to raspberry pi
-#define AcqSerial Serial
+#define AcqSerial Serial1
 
 bool toggle = false;
 void ISR_GPS_tick() {
@@ -66,7 +68,7 @@ void DoADC() {
 }
 
 void setup() {
-  AcqSerial.begin(115200);
+  AcqSerial.begin(9600);
   AcqSerial.println("Welcome to the ECLIPSE DATA ACQUISITION BOARD...");
   AcqSerial.printf("ADC sampling at %d Hz (%d us per sample).\n", SAMPLE_RATE, SAMPLE_TIME_US);
 
@@ -90,6 +92,7 @@ void setup() {
 }
 
 void loop() {
+  AcqSerial.begin(38400);
 
   if (GPSSerial.available()) {
     if (gps.encode(GPSSerial.read())) {
@@ -101,7 +104,7 @@ void loop() {
         AcqSerial.printf("G$%f,%f\n", gps.location.lat(), gps.location.lng());
       }
     }
-  }
+  } 
 
   if (data_ready) {
     noInterrupts();
