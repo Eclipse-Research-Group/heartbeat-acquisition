@@ -1,0 +1,41 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the workflow will run
+on: [push, workflow_dispatch]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build_teensy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./teensy
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install required software
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y software-properties-common xvfb libxrender1 libxtst6 libxi6
+          sudo apt-get install -y libsdl2-2.0-0
+
+      - name: Download and configure Arduino CLI
+        run: |
+          sh ./setup.sh
+        
+      - name: Compile firmware for Teensy 4.0
+        run: |
+          rm -rf build
+          FQBN_ARG="-b teensy:avr:teensy40:usb=serial,speed=600,opt=o2std,keys=en-us"
+          OUTPUT_ARG="--output-dir $(pwd)/build"
+          DEBUG_TRUE="--build-property build.extra_flags=-DDEBUG=true"
+          DEBUG_FALSE="--build-property build.extra_flags=-DDEBUG=false"
+          sudo Xvfb :1 -screen 0 1024x768x24 </dev/null &
+          export DISPLAY=":1"
+          ./bin/arduino-cli compile $FQBN_ARG $DEBUG_TRUE $OUTPUT_ARG --quiet
