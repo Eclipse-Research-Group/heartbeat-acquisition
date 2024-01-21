@@ -1,4 +1,3 @@
-#include <TinyGPS++.h>
 #include <HardwareSerial.h>
 #include <Adafruit_GPS.h>
 #include <TimeLib.h>
