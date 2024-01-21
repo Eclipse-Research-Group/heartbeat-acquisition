@@ -7,16 +7,34 @@ import numpy as np
 import uuid
 import matplotlib.pyplot as plt
 import sys
+import logging
 from colorama import Fore, Back, Style
 
+logging.basicConfig(filename='example.log', encoding='utf-8', level=logging.DEBUG)
+
+class HeartbeatAcquisition:
+
+    def __init__(self):
+        # Load config
+        self.config = configparser.ConfigParser()
+
+        pass
+
+    def init(self):
+        logging.info("config file")
+        self.config.read('acquire.ini')
+        
+
+    def tick(self):
+        pass
 
 
-# Load config
-config = configparser.ConfigParser()
-config.read('acquire.ini')
+
+acq = HeartbeatAcquisition()
+acq.init()
 
 # Open serial port
-print(f"{Fore.BLUE}Using serial port {config["teensy"].get("port")}")
+print(f"{Fore.BLUE}Using serial port {config["teensy"].get("port")} at {config["teensy"].get("baudrate")} baud")
 
 try: 
     ser = serial.Serial(config["teensy"].get("port"), 250000);
@@ -73,6 +91,5 @@ while running:
         if gps_searching:
             print(Fore.GREEN + f"[{capture_line.time}] Got GPS fix" + Style.RESET_ALL)
             gps_searching = False
-
 
     writer.write_line(capture_line)
