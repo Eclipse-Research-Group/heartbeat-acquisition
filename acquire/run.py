@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import logging
+import urllib3
 import threading
 from colorama import Fore, Back, Style
 from minio import Minio
@@ -44,11 +45,19 @@ class FileFormatter(logging.Formatter):
 
 class HeartbeatStorage:
     def __init__(self, url: str, access_key: str, secret_key: str, bucket: str):
-        logging.getLogger("ACQ.STORAGE").info(f"Connecting to {url} as {access_key}")
+        logging.getLogger("acq.storage").info(f"Connecting to {url} as {access_key}")
         self.client = Minio(url,
             access_key=access_key,
             secret_key=secret_key,
-            secure=False
+            secure=False,
+            http_client=urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=5.0, read=10.0),
+                retries=urllib3.Retry(
+                    total=1,  # Total number of retries
+                    backoff_factor=0.2,  # Backoff factor for retries
+                    status_forcelist=[500, 502, 503, 504],  # HTTP status codes to retry
+                )
+            )
         )
         self.bucket = bucket
         self.upload_queue = []
@@ -56,8 +65,13 @@ class HeartbeatStorage:
 
     def init(self):
         logger = logging.getLogger("acq.storage")
-        self.client.bucket_exists(self.bucket)
-        logger.info("Storage OK.")
+
+        try:
+            self.client.bucket_exists(self.bucket)
+            logger.info("Storage OK.")
+        except Exception as e:
+            logger.error(e)
+            logger.error("Unable to connect to storage")
 
         self.upload_thread = threading.Thread(target=self.loop, daemon=True)
         self.upload_thread.start()
@@ -67,21 +81,28 @@ class HeartbeatStorage:
     def loop(self):
         logger = logging.getLogger("acq.storage.upload_thread")
         while True:
-            if len(self.upload_queue) == 0:
-                time.sleep(10)
-                continue
+            time.sleep(5)
 
-            logger.info("Uploading %d files" % len(self.upload_queue))
+            logger.info("Attemping to upload %d files" % len(self.upload_queue))
 
             while len(self.upload_queue) > 0:
-                filename, path = self.upload_queue.pop(0)
-                self.client.fput_object(self.bucket, os.path.join("/upload", filename), path)
-                logger.info(f"Uploaded {filename} to {self.bucket}")
+                filename, path = self.upload_queue[0]
+                try:
+                    self.client.fput_object(self.bucket, os.path.join("/upload", filename), path)
+                    logger.info(f"Uploaded {filename} to {self.bucket}")
+                    self.upload_queue.pop(0)
+                except urllib3.exceptions.MaxRetryError as e:
+                    logger.error(e)
+                    logger.error("Error uploading file, will retry later")
+                    break
 
             
 
     def upload(self, filename: str, path: str): 
         logger = logging.getLogger("acq.storage")
+
+        if not self.upload_thread.is_alive:
+            logger.error("Upload thread died")
         logger.info(f"Queuing upload of {filename} to {self.bucket}")
         self.upload_queue.append((filename, path))
 
@@ -149,8 +170,15 @@ class HeartbeatAcquisition:
         # Expected sample rate
         self.sample_rate = -1
 
+        self.node_id = self.config["acquire"].get("node_id")
+        if self.node_id is None:
+            logger.error("Missing node_id in config")
+            self.node_id = "UNKNOWN"
+
+        logger.info(f"Node ID: {self.node_id}")
+
         # TODO finish writer stuff
-        self.writer = hb.writer(root_dir=self.root_dir, capture_id=self.capture_id, node_id="ET0001", sample_rate=self.sample_rate)
+        self.writer = hb.writer(root_dir=self.root_dir, capture_id=self.capture_id, node_id=self.node_id, sample_rate=self.sample_rate)
         self.writer.init()
 
         # Load storage
@@ -202,7 +230,7 @@ class HeartbeatAcquisition:
             logger.warning("No GPS fix (data may be misaligned for this second)")
 
         # rotate files as desired
-        if self.lines_written % 20 == 0:
+        if self.lines_written % 5 == 0:
             logger.info(f"Moving to new file, {self.lines_written} lines written")
             header_file = self.writer.files[-1].get_header_filename()
             data_file = self.writer.files[-1].get_data_filename()
@@ -238,16 +266,16 @@ signal.signal(signal.SIGINT, signal_handler)
 try:
     acq.init()
 except Exception as e:
-    logging.getLogger("acq.init").critical(e)
-    logging.getLogger("acq.init").critical(traceback.format_exc())
+    logging.getLogger("acq.init").error(e)
+    logging.getLogger("acq.init").error(traceback.format_exc())
     sys.exit(1)
 
 while True:
     try:
         acq.tick()
     except FileNotFoundError as e:
-        logging.getLogger("acq.tick").critical(e)
-        logging.getLogger("acq.tick").critical(traceback.format_exc())
+        logging.getLogger("acq.tick").error(e)
+        logging.getLogger("acq.tick").error(traceback.format_exc())
         # TODO attempt to upload existing files to server
         # logging.getLogger("acq.tick").info("Will attempt to upload existing data to server...")
 
