@@ -221,7 +221,12 @@ class HeartbeatAcquisition:
         elif not serial_line.startswith("$"):
             return
 
-        line: hb.HeartbeatCaptureLine = hb.parse_line(serial_line[1:])
+        try:
+            line: hb.HeartbeatCaptureLine = hb.parse_line(serial_line[1:])
+        except ValueError as e:
+            logger.error(e)
+            logger.error("Could not parse line")
+            return
         logger.info(f"Got data for {line.time}")
 
         # Write the line
