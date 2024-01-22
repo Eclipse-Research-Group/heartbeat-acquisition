@@ -275,7 +275,6 @@ class HeartbeatAcquisition:
         self.writer.done()
 
 acq = HeartbeatAcquisition()
-    
 
 def signal_handler(sig, frame):
     if sig == signal.SIGINT:
