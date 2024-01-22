@@ -207,7 +207,13 @@ class HeartbeatAcquisition:
         logger.debug("Reading line from serial port")
 
         serial_line = self.ser.readline()
-        serial_line = serial_line.decode('utf-8')
+        try: 
+            serial_line = serial_line.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            # TODO still keep "bad" data, clean up later?
+            logger.error("Could not decode serial line")
+            return
+
         
         if serial_line.startswith("#"):
             logger.getLogger("acq.serial").info(f"SERIAL: {serial_line}")
