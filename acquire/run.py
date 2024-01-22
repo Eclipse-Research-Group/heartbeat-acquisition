@@ -17,6 +17,7 @@ import threading
 from google.cloud import storage
 from colorama import Fore, Back, Style
 from minio import Minio
+from minio.commonconfig import Tags
 from minio.error import S3Error
 
 class ConsoleFormatter(logging.Formatter):
@@ -47,21 +48,21 @@ class FileFormatter(logging.Formatter):
 class HeartbeatStorage:
     def __init__(self, url: str, access_key: str, secret_key: str, bucket: str):
         logging.getLogger("acq.storage").info(f"Connecting to {url} as {access_key}")
-        # self.client = Minio(url,
-        #     access_key=access_key,
-        #     secret_key=secret_key,
-        #     secure=False,
-        #     http_client=urllib3.PoolManager(
-        #         timeout=urllib3.Timeout(connect=5.0, read=10.0),
-        #         retries=urllib3.Retry(
-        #             total=1,  # Total number of retries
-        #             backoff_factor=0.2,  # Backoff factor for retries
-        #             status_forcelist=[500, 502, 503, 504],  # HTTP status codes to retry
-        #         )
-        #     )
-        # )
+        self.client = Minio(url,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=False,
+            http_client=urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=5.0, read=10.0),
+                retries=urllib3.Retry(
+                    total=1,  # Total number of retries
+                    backoff_factor=0.2,  # Backoff factor for retries
+                    status_forcelist=[500, 502, 503, 504],  # HTTP status codes to retry
+                )
+            )
+        )
 
-        self.client = storage.Client.from_service_account_json('key.json')
+        # self.client = storage.Client.from_service_account_json('key.json')
         self.bucket = bucket
         self.upload_queue = []
         pass
@@ -69,16 +70,16 @@ class HeartbeatStorage:
     def init(self):
         logger = logging.getLogger("acq.storage")
 
-        try:
-            if not self.client.lookup_bucket(self.bucket) is None:
-                logger.info("Storage OK.")
-            else:
-                logger.error("Storage not found")
+        # try:
+        #     if not self.client.lookup_bucket(self.bucket) is None:
+        #         logger.info("Storage OK.")
+        #     else:
+        #         logger.error("Storage not found")
 
-            self.gbucket = self.client.get_bucket(self.bucket)
-        except Exception as e:
-            logger.error(e)
-            logger.error("Unable to connect to storage")
+        #     self.gbucket = self.client.get_bucket(self.bucket)
+        # except Exception as e:
+        #     logger.error(e)
+        #     logger.error("Unable to connect to storage")
 
         self.upload_thread = threading.Thread(target=self.loop, daemon=True)
         self.upload_thread.start()
@@ -95,9 +96,15 @@ class HeartbeatStorage:
             while len(self.upload_queue) > 0:
                 filename, path = self.upload_queue[0]
                 try:
-                    # self.client.fput_object(self.bucket, os.path.join("/upload", filename), path)
-                    blob = self.gbucket.blob(filename)
-                    blob.upload_from_filename(path)
+                    self.client.fput_object(self.bucket, os.path.join(acq.node_id, filename), path)
+                    tags = Tags.new_object_tags()
+                    tags["capture_id"] = acq.capture_id.hex
+                    tags["node_id"] = acq.node_id
+                    self.client.set_object_tags(self.bucket, os.path.join(acq.node_id, filename), tags)
+                    # blob = self.gbucket.blob(filename)
+                    # metadata = { "capture_id": acq.capture_id.hex, "node_id": acq.node_id, "sample_rate": acq.sample_rate }
+                    # blob.metadata = metadata
+                    # blob.upload_from_filename(path)
                     logger.info(f"Uploaded {filename} to {self.bucket}")
                     self.upload_queue.pop(0)
                 except urllib3.exceptions.MaxRetryError as e:
@@ -191,7 +198,7 @@ class HeartbeatAcquisition:
         self.writer.init()
 
         # Load storage
-        logger.info("Loading minio...")
+        logger.info("Loading cloud storage...")
         self.storage = HeartbeatStorage(url=self.config["minio"].get("host"), 
                                                    access_key=self.config["minio"].get("access_key"), 
                                                    secret_key=self.config["minio"].get("secret_key"),
