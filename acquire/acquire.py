@@ -14,6 +14,8 @@ import os
 import logging
 import urllib3
 import threading
+import argparse
+import sdnotify
 from google.cloud import storage
 from colorama import Fore, Back, Style
 from minio import Minio
@@ -91,6 +93,10 @@ class HeartbeatStorage:
         while True:
             time.sleep(5)
 
+            if len(self.upload_queue) == 0:
+                logger.debug("No upload queue, skipping")
+                continue
+
             logger.info("Attemping to upload %d files" % len(self.upload_queue))
 
             while len(self.upload_queue) > 0:
@@ -135,16 +141,7 @@ class HeartbeatAcquisition:
         pass
 
     def init(self):
-        # configure logger
         logger = logging.getLogger("acq")
-        logger.setLevel(logging.DEBUG)
-
-        # create console handler with a higher log level
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(ConsoleFormatter())
-        logger.addHandler(ch)
-
 
         # make sure our config file exists
         if (not os.path.isfile(os.path.join(os.getcwd(), 'config.ini'))):
@@ -153,9 +150,6 @@ class HeartbeatAcquisition:
 
 
         self.config.read('config.ini')
-
-
-        logger.info("Welcome to Heartbeat Acquisition")
 
         self.root_dir = self.config["acquire"].get("root_dir", "./hb")
         logger.info(f"Using root directory {self.root_dir}")
@@ -168,7 +162,7 @@ class HeartbeatAcquisition:
         logger.info(f"Capture ID: {self.capture_id}")
 
         # log to file
-        fh = logging.FileHandler(os.path.join(self.root_dir, f'{self.capture_id}.log'), encoding='utf-8', mode="w")
+        fh = logging.FileHandler(os.path.join(self.root_dir, f'{self.capture_id}_aquisition.log'), encoding='utf-8', mode="w")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(FileFormatter())
         logger.addHandler(fh)
@@ -274,36 +268,69 @@ class HeartbeatAcquisition:
         self.ser.close()
         self.writer.done()
 
-acq = HeartbeatAcquisition()
+notifier = sdnotify.SystemdNotifier()
 
-def signal_handler(sig, frame):
-    if sig == signal.SIGINT:
-        if (acq.is_ready):
-            logging.getLogger("acq").critical("Received SIGINT, shutting down...")
-            acq.shutdown()
-            logging.getLogger("acq").info("Goodbye.")
+def main():
+    parser = argparse.ArgumentParser(prog="acquire", 
+                                     description="Eclipse data acquisition daemon",
+                                     epilog="Thanks for using Heartbeat!")
+    parser.add_argument("-v", "--verbose", action="store_true", help="increase output verbosity")
+    
+    args = parser.parse_args()
+
+    # configure logger
+    logger = logging.getLogger("acq")
+
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
     else:
-        logging.getLogger("acq").critical("Shutting down...")
+        logger.setLevel(logging.INFO)
 
-    sys.exit(0)
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setFormatter(ConsoleFormatter())
+    logger.addHandler(ch)
 
-signal.signal(signal.SIGINT, signal_handler)
+    logger.info("Welcome to heartbeat-acquisition, a data acquisition program!")
 
-try:
-    acq.init()
-except Exception as e:
-    logging.getLogger("acq.init").error(e)
-    logging.getLogger("acq.init").error(traceback.format_exc())
-    sys.exit(1)
+    acq = HeartbeatAcquisition()
 
-while True:
+    def signal_handler(sig, frame):
+        if sig == signal.SIGINT or sig == signal.SIGTERM:
+            if (acq.is_ready):
+                logging.getLogger("acq").critical("Received SIGINT, shutting down...")
+                acq.shutdown()
+                logging.getLogger("acq").info("Goodbye.")
+        else:
+            logging.getLogger("acq").critical("Shutting down...")
+
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
-        acq.tick()
-    except FileNotFoundError as e:
-        logging.getLogger("acq.tick").error(e)
-        logging.getLogger("acq.tick").error(traceback.format_exc())
-        # TODO attempt to upload existing files to server
-        # logging.getLogger("acq.tick").info("Will attempt to upload existing data to server...")
-
-        logging.getLogger("acq.tick").critical("Error in data acquisition, shutting down...")
+        acq.init()
+    except Exception as e:
+        logging.getLogger("acq.init").error(e)
+        logging.getLogger("acq.init").error(traceback.format_exc())
         sys.exit(1)
+
+    # We're ready, signal
+    notifier.notify("READY=1")
+
+    while True:
+        try:
+            acq.tick()
+        except FileNotFoundError as e:
+            logging.getLogger("acq.tick").error(e)
+            logging.getLogger("acq.tick").error(traceback.format_exc())
+            # TODO attempt to upload existing files to server
+            # logging.getLogger("acq.tick").info("Will attempt to upload existing data to server...")
+
+            logging.getLogger("acq.tick").critical("Error in data acquisition, shutting down...")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
