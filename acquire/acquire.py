@@ -172,7 +172,9 @@ class HeartbeatAcquisition:
         # Open serial port
         logger.info(f"Opening serial port {self.config['teensy'].get('port')} at {self.config['teensy'].get('baudrate')} baud")
         try: 
-            self.ser = serial.Serial(self.config["teensy"].get("port"), self.config['teensy'].get('baudrate'));
+            self.ser = serial.Serial(self.config["teensy"].get("port"), 
+                                     baudrate=self.config['teensy'].get('baudrate'),
+                                     timeout=2);
         except serial.SerialException:
             logger.critical("Could not open serial port")
             sys.exit(1)
