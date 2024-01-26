@@ -10,7 +10,6 @@ import configparser
 import signal
 import numpy as np
 import uuid
-import time
 import matplotlib.pyplot as plt
 import sys
 import os
@@ -20,11 +19,13 @@ import threading
 import argparse
 import sdnotify
 import uuid
+from time import sleep
 from google.cloud import storage
 from colorama import Fore, Back, Style
 from minio import Minio
 from minio.commonconfig import Tags
 from minio.error import S3Error
+from serial.serialutil import SerialException
 
 class Singleton(type):
     _instances = {}
@@ -100,7 +101,7 @@ class HeartbeatStorage:
         logger = logging.getLogger("hb.acq.storage.upload_thread")
         while True:
             logger.debug("Sleeping for 5 seconds")
-            time.sleep(5)
+            sleep(5)
 
             if len(self.upload_queue) == 0:
                 logger.debug("No upload queue, skipping")
@@ -117,9 +118,12 @@ class HeartbeatStorage:
                     logger.info(f"Uploaded {source_path} to {self.bucket}")
                     self.upload_queue.pop(0)
                     if callback:
-                        thread = threading.Thread(target=callback, daemon=True)
+                        thread = threading.Thread(target=callback, daemon=True, args=(source_path))
                         thread.start()
-
+                except S3Error as e:
+                    logger.error(e)
+                    logger.error("Error uploading file, will retry later")
+                    break
                 except urllib3.exceptions.MaxRetryError as e:
                     logger.error(e)
                     logger.error("Error uploading file, will retry later")
@@ -176,7 +180,7 @@ class HeartbeatApp(metaclass=Singleton):
 
         if hasattr(os, "sched_setaffinity"):
             affinity = self.config["cpu"].getint("affinity") 
-            if affinity is not None and affinity is not -1:
+            if affinity is not None and affinity != -1:
                 logger.info(f"Setting affinity to {self.config['cpu'].getint('affinity')}")
                 os.sched_setaffinity(0, [self.config["cpu"].getint("affinity")])
 
@@ -257,10 +261,10 @@ class HeartbeatApp(metaclass=Singleton):
 
         try:
             serial_line = self.ser.readline()
-        except serial.SerialException:
+        except (serial.SerialException) as e:
             logger.critical("Could not read from serial port")
             logger.critical("Sleeping for 3 seconds before reconnect")
-            time.sleep(3)
+            sleep(3)
             logger.critical("Reconnecting...")
             try:
                 self.connect_serial()
@@ -317,8 +321,11 @@ class HeartbeatApp(metaclass=Singleton):
         if self.lines_written % 5 == 0:
             logger.info(f"Moving to new file, {self.lines_written} lines written")
             self.writer.close()
+            filename = os.path.basename(self.writer.path)
+            self.storage.upload(self.writer.path, os.path.join(self.node_id, filename), gzip_this)
             time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}.csv'), metadata=self.metadata)
+            self.writer.open()
 
     def shutdown(self):
         if not self.is_ready:
@@ -326,6 +333,10 @@ class HeartbeatApp(metaclass=Singleton):
             return
         self.ser.close()
         logging.getLogger("hb.acq.serial").critical("CLOSING NOT IMPLEMENTED")
+
+def gzip_this(path: str):
+    logging.getLogger("hb.acq.gzip").info(f"Compressing {path}")
+    pass
 
 notifier = sdnotify.SystemdNotifier()
 
