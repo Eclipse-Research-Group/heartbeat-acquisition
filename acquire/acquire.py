@@ -113,8 +113,6 @@ class HeartbeatStorage:
                 source_path, target_path, callback = self.upload_queue[0]
                 try:
                     self.client.fput_object(self.bucket, target_path, source_path)
-                    tags = Tags.new_object_tags()
-                    self.client.set_object_tags(self.bucket, target_path, tags)
                     logger.info(f"Uploaded {source_path} to {self.bucket}")
                     self.upload_queue.pop(0)
                     if callback:
@@ -129,6 +127,13 @@ class HeartbeatStorage:
                     logger.error("Error uploading file, will retry later")
                     break
 
+                try:
+                    tags = Tags.new_object_tags()
+                    self.client.set_object_tags(self.bucket, target_path, tags)
+                except S3Error as e:
+                    logger.error(e)
+                    logger.error("Error updating tags")
+                    break
             
 
     def upload(self, source_path: str, target_path: str, callback=None): 
