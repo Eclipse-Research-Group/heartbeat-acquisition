@@ -116,7 +116,7 @@ class HeartbeatStorage:
                     logger.info(f"Uploaded {source_path} to {self.bucket}")
                     self.upload_queue.pop(0)
                     if callback:
-                        thread = threading.Thread(target=callback, daemon=True, args=(source_path))
+                        thread = threading.Thread(target=callback, daemon=True, args=source_path)
                         thread.start()
                 except S3Error as e:
                     logger.error(e)
