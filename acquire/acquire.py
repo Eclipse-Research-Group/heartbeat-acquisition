@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import logging
+import subprocess
 import urllib3
 import threading
 import argparse
@@ -112,27 +113,23 @@ class HeartbeatStorage:
             while len(self.upload_queue) > 0:
                 source_path, target_path, callback = self.upload_queue[0]
                 try:
-                    self.client.fput_object(self.bucket, target_path, source_path)
+                    # self.client.fput_object(self.bucket, target_path, source_path)
                     logger.info(f"Uploaded {source_path} to {self.bucket}")
                     self.upload_queue.pop(0)
                     if callback:
                         thread = threading.Thread(target=callback, daemon=True, args=[source_path])
                         thread.start()
-                except S3Error as e:
+                except (S3Error, urllib3.exceptions.MaxRetryError) as e:
                     logger.error(e)
-                    logger.error("Error uploading file, will retry later")
-                    break
-                except urllib3.exceptions.MaxRetryError as e:
-                    logger.error(e)
-                    logger.error("Error uploading file, will retry later")
+                    logger.error(f"Error uploading file {source_path}, will retry later")
                     break
 
                 try:
                     tags = Tags.new_object_tags()
                     self.client.set_object_tags(self.bucket, target_path, tags)
-                except S3Error as e:
+                except (S3Error, urllib3.exceptions.MaxRetryError) as e:
                     logger.error(e)
-                    logger.error("Error updating tags")
+                    logger.error(f"Error updating tags for file {target_path}, will retry later")
                     break
             
 
@@ -204,7 +201,7 @@ class HeartbeatApp(metaclass=Singleton):
         logger.info(f"Capture ID: {self.capture_id}")
 
         # log to file
-        fh = logging.FileHandler(os.path.join(self.data_dir, f'{self.capture_id}_aquisition.log'), encoding='utf-8', mode="w")
+        fh = logging.FileHandler(os.path.join(self.data_dir, f'{self.capture_id}.log'), encoding='utf-8', mode="w")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(FileFormatter())
         logger.addHandler(fh)
@@ -340,8 +337,16 @@ class HeartbeatApp(metaclass=Singleton):
         logging.getLogger("hb.acq.serial").critical("CLOSING NOT IMPLEMENTED")
 
 def gzip_this(path: str):
-    logging.getLogger("hb.acq.gzip").info(f"Compressing {path}")
-    pass
+    logger = logging.getLogger("hb.acq.gzip")
+    logger.debug(f"Compressing {path}")
+
+    # Use the gzip command to compress the file
+    try:
+        subprocess.run(['gzip', path])
+        logger.debug(f'{path} has been gzipped successfully.')
+    except subprocess.CalledProcessError as e:
+        logger.error(e)
+        logger.error(f'Failed to gzip {path}.')
 
 notifier = sdnotify.SystemdNotifier()
 
