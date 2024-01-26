@@ -4,6 +4,8 @@ from logging.handlers import RotatingFileHandler
 import traceback
 import serial
 import hbcapture as hb
+from hbcapture.capture import CaptureFileMetadata, CaptureFileWriter
+from hbcapture.data import DataPoint
 import configparser
 import signal
 import numpy as np
@@ -17,11 +19,19 @@ import urllib3
 import threading
 import argparse
 import sdnotify
+import uuid
 from google.cloud import storage
 from colorama import Fore, Back, Style
 from minio import Minio
 from minio.commonconfig import Tags
 from minio.error import S3Error
+
+class Singleton(type):
+    _instances = {}
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._instances[cls]
 
 class ConsoleFormatter(logging.Formatter):
 
@@ -50,7 +60,7 @@ class FileFormatter(logging.Formatter):
 
 class HeartbeatStorage:
     def __init__(self, url: str, access_key: str, secret_key: str, bucket: str):
-        logging.getLogger("acq.storage").info(f"Connecting to {url} as {access_key}")
+        logging.getLogger("hb.acq.storage").info(f"Connecting to {url} as {access_key}")
         self.client = Minio(url,
             access_key=access_key,
             secret_key=secret_key,
@@ -71,27 +81,25 @@ class HeartbeatStorage:
         pass
 
     def init(self):
-        logger = logging.getLogger("acq.storage")
+        logger = logging.getLogger("hb.acq.storage")
 
-        # try:
-        #     if not self.client.lookup_bucket(self.bucket) is None:
-        #         logger.info("Storage OK.")
-        #     else:
-        #         logger.error("Storage not found")
+        try:
+            if self.client.bucket_exists(self.bucket):
+                logger.debug(f"Bucket {self.bucket} found")
+            else:
+                logger.error(f"Bucket {self.bucket} not found")
 
-        #     self.gbucket = self.client.get_bucket(self.bucket)
-        # except Exception as e:
-        #     logger.error(e)
-        #     logger.error("Unable to connect to storage")
+        except Exception as e:
+            logger.error(e)
+            logger.error("Unable to connect to storage")
 
-        self.upload_thread = threading.Thread(target=self.loop, daemon=True)
+        self.upload_thread = threading.Thread(target=self.upload_thread, daemon=True)
         self.upload_thread.start()
-        
-        pass
 
-    def loop(self):
-        logger = logging.getLogger("acq.storage.upload_thread")
+    def upload_thread(self):
+        logger = logging.getLogger("hb.acq.storage.upload_thread")
         while True:
+            logger.debug("Sleeping for 5 seconds")
             time.sleep(5)
 
             if len(self.upload_queue) == 0:
@@ -101,19 +109,17 @@ class HeartbeatStorage:
             logger.info("Attemping to upload %d files" % len(self.upload_queue))
 
             while len(self.upload_queue) > 0:
-                filename, path = self.upload_queue[0]
+                source_path, target_path, callback = self.upload_queue[0]
                 try:
-                    self.client.fput_object(self.bucket, os.path.join(acq.node_id, filename), path)
+                    self.client.fput_object(self.bucket, target_path, source_path)
                     tags = Tags.new_object_tags()
-                    tags["capture_id"] = acq.capture_id.hex
-                    tags["node_id"] = acq.node_id
-                    self.client.set_object_tags(self.bucket, os.path.join(acq.node_id, filename), tags)
-                    # blob = self.gbucket.blob(filename)
-                    # metadata = { "capture_id": acq.capture_id.hex, "node_id": acq.node_id, "sample_rate": acq.sample_rate }
-                    # blob.metadata = metadata
-                    # blob.upload_from_filename(path)
-                    logger.info(f"Uploaded {filename} to {self.bucket}")
+                    self.client.set_object_tags(self.bucket, target_path, tags)
+                    logger.info(f"Uploaded {source_path} to {self.bucket}")
                     self.upload_queue.pop(0)
+                    if callback:
+                        thread = threading.Thread(target=callback, daemon=True)
+                        thread.start()
+
                 except urllib3.exceptions.MaxRetryError as e:
                     logger.error(e)
                     logger.error("Error uploading file, will retry later")
@@ -121,16 +127,34 @@ class HeartbeatStorage:
 
             
 
-    def upload(self, filename: str, path: str): 
+    def upload(self, source_path: str, target_path: str, callback=None): 
         logger = logging.getLogger("acq.storage")
 
         if not self.upload_thread.is_alive:
             logger.error("Upload thread died")
-        logger.info(f"Queuing upload of {filename} to {self.bucket}")
-        self.upload_queue.append((filename, path))
+        logger.info(f"Queuing upload of {source_path} to {self.bucket}")
+        self.upload_queue.append((source_path, target_path, callback))
 
 
-class HeartbeatAcquisition:
+
+
+class StatusManager:
+
+    def __init__(self):
+        self.logger = logging.getLogger("hb.acq.status")
+
+    def start(self):
+        self.logger.info("Starting status manager")
+        self.status_thread = threading.Thread(target=self.reporter_thread, daemon=True)
+        self.status_thread.start()
+
+    def reporter_thread(self): 
+        while True:
+            self.logger.info("Sleeping for 5 seconds")
+            time.sleep(5)
+
+
+class HeartbeatApp(metaclass=Singleton):
 
     def __init__(self):
         self.config = configparser.ConfigParser()
@@ -139,10 +163,8 @@ class HeartbeatAcquisition:
         self.is_ready = False
         self.lines_written = 0
 
-        pass
-
     def init(self):
-        logger = logging.getLogger("acq")
+        logger = logging.getLogger("hb.acq")
 
         # make sure our config file exists
         if (not os.path.isfile(os.path.join(os.getcwd(), 'config.ini'))):
@@ -152,18 +174,18 @@ class HeartbeatAcquisition:
 
         self.config.read('config.ini')
 
-        self.root_dir = self.config["acquire"].get("root_dir", "./hb")
-        logger.info(f"Using root directory {self.root_dir}")
-        if not os.path.isdir(self.root_dir):
-            logger.info(f"Creating root directory {self.root_dir}")
-            os.mkdir(self.root_dir)
+        self.data_dir = self.config["acquire"].get("root_dir", "./hb")
+        logger.info(f"Using root directory {self.data_dir}")
+        if not os.path.isdir(self.data_dir):
+            logger.info(f"Creating root directory {self.data_dir}")
+            os.mkdir(self.data_dir)
 
         # Generate random capture id
         self.capture_id = uuid.uuid4()
         logger.info(f"Capture ID: {self.capture_id}")
 
         # log to file
-        fh = logging.FileHandler(os.path.join(self.root_dir, f'{self.capture_id}_aquisition.log'), encoding='utf-8', mode="w")
+        fh = logging.FileHandler(os.path.join(self.data_dir, f'{self.capture_id}_aquisition.log'), encoding='utf-8', mode="w")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(FileFormatter())
         logger.addHandler(fh)
@@ -172,9 +194,7 @@ class HeartbeatAcquisition:
         # Open serial port
         logger.info(f"Opening serial port {self.config['teensy'].get('port')} at {self.config['teensy'].get('baudrate')} baud")
         try: 
-            self.ser = serial.Serial(self.config["teensy"].get("port"), 
-                                     baudrate=self.config['teensy'].get('baudrate'),
-                                     timeout=2);
+            self.connect_serial()
         except serial.SerialException:
             logger.critical("Could not open serial port")
             sys.exit(1)
@@ -190,10 +210,6 @@ class HeartbeatAcquisition:
 
         logger.info(f"Node ID: {self.node_id}")
 
-        # TODO finish writer stuff
-        self.writer = hb.writer(root_dir=self.root_dir, capture_id=self.capture_id, node_id=self.node_id, sample_rate=self.sample_rate)
-        self.writer.init()
-
         # Load storage
         logger.info("Loading cloud storage...")
         self.storage = HeartbeatStorage(url=self.config["minio"].get("host"), 
@@ -202,15 +218,48 @@ class HeartbeatAcquisition:
                                                    bucket=self.config["minio"].get("bucket"))
         self.storage.init()
 
+        metadata = CaptureFileMetadata(self.capture_id, self.sample_rate)
+        metadata.set_metadata("NODE_ID", self.node_id)
+
+        if self.config["acquire"].get("location") is not None:
+            metadata.set_metadata("LOCATION", self.config["acquire"].get("location"))
+
+        if self.config["acquire"].get("operator") is not None:
+            metadata.set_metadata("OPERATOR", self.config["acquire"].get("operator"))
+
+        self.metadata = metadata
+
+        self.file_count = 0
+        time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}_csv'), metadata=self.metadata)
+        self.writer.open()
+
         self.is_ready = True
         logger.info("Ready for data acquisition")
         
 
+    def connect_serial(self):
+        self.ser = serial.Serial(self.config["teensy"].get("port"), baudrate=self.config['teensy'].get('baudrate'))
+
     def tick(self):
-        logger = logging.getLogger("acq.tick")
+        logger = logging.getLogger("hb.acq.tick")
         logger.debug("Reading line from serial port")
 
-        serial_line = self.ser.readline()
+        try:
+            serial_line = self.ser.readline()
+        except serial.SerialException:
+            logger.critical("Could not read from serial port")
+            logger.critical("Sleeping for 3 seconds before reconnect")
+            time.sleep(3)
+            logger.critical("Reconnecting...")
+            try:
+                self.connect_serial()
+            except serial.SerialException:
+                logger.critical("Could not open serial port")
+            return
+            # sys.exit(1)
+
+
         try: 
             serial_line = serial_line.decode("utf-8").strip()
         except UnicodeDecodeError:
@@ -220,22 +269,17 @@ class HeartbeatAcquisition:
 
         
         if serial_line.startswith("#"):
-            logger.getLogger("acq.serial").info(f"SERIAL: {serial_line}")
-            self.writer.write_line(serial_line)
+            logger.getLogger("hb.acq.serial").info(f"SERIAL: {serial_line}")
         elif not serial_line.startswith("$"):
             return
 
         try:
-            line: hb.HeartbeatCaptureLine = hb.parse_line(serial_line[1:])
+            line = hb.data.parse(serial_line[1:])
         except ValueError as e:
             logger.error(e)
             logger.error("Could not parse line")
             return
         logger.info(f"Got data for {line.time}")
-
-        # Write the line
-        self.writer.write_line(line)
-        self.lines_written += 1
 
         # Update status
         self.is_clipping = line.is_clipping()
@@ -244,6 +288,8 @@ class HeartbeatAcquisition:
         # Check on sample rate
         if self.sample_rate == -1:
             self.sample_rate = line.sample_rate
+            self.metadata.sample_rate = line.sample_rate
+            self.writer.reset_file()
             logger.info(f"Using sample rate: {self.sample_rate} Hz")
 
         if self.sample_rate != line.sample_rate:
@@ -253,23 +299,23 @@ class HeartbeatAcquisition:
         if not line.has_gps_fix():
             logger.warning("No GPS fix (data may be misaligned for this second)")
 
+        # Write the line
+        self.writer.write_data(line)
+        self.lines_written += 1
+
         # rotate files as desired
         if self.lines_written % 5 == 0:
             logger.info(f"Moving to new file, {self.lines_written} lines written")
-            header_file = self.writer.files[-1].get_header_filename()
-            data_file = self.writer.files[-1].get_data_filename()
-           
-            self.writer.next_file()
-
-            self.storage.upload(header_file, os.path.join(self.root_dir, header_file))
-            self.storage.upload(data_file, os.path.join(self.root_dir, data_file))
+            self.writer.close()
+            time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}.csv'), metadata=self.metadata)
 
     def shutdown(self):
         if not self.is_ready:
             logging.info("Nothing to shutdown")
             return
         self.ser.close()
-        self.writer.done()
+        logging.getLogger("hb.acq.serial").critical("CLOSING NOT IMPLEMENTED")
 
 notifier = sdnotify.SystemdNotifier()
 
@@ -282,7 +328,7 @@ def main():
     args = parser.parse_args()
 
     # configure logger
-    logger = logging.getLogger("acq")
+    logger = logging.getLogger("hb")
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -294,18 +340,20 @@ def main():
     ch.setFormatter(ConsoleFormatter())
     logger.addHandler(ch)
 
+    logger = logging.getLogger("hb.acq")
+
     logger.info("Welcome to heartbeat-acquisition, a data acquisition program!")
 
-    acq = HeartbeatAcquisition()
+    acq = HeartbeatApp()
 
     def signal_handler(sig, frame):
         if sig == signal.SIGINT or sig == signal.SIGTERM:
             if (acq.is_ready):
-                logging.getLogger("acq").critical("Received SIGINT, shutting down...")
+                logging.getLogger("hb.acq").critical("Received SIGINT, shutting down...")
                 acq.shutdown()
-                logging.getLogger("acq").info("Goodbye.")
+                logging.getLogger("hb.acq").info("Goodbye.")
         else:
-            logging.getLogger("acq").critical("Shutting down...")
+            logging.getLogger("hb.acq").critical("Shutting down...")
 
         sys.exit(0)
 
