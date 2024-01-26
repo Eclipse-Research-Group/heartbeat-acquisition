@@ -174,7 +174,17 @@ class HeartbeatApp(metaclass=Singleton):
 
         self.config.read('config.ini')
 
-        self.data_dir = self.config["acquire"].get("root_dir", "./hb")
+        if hasattr(os, "sched_setaffinity"):
+            affinity = self.config["cpu"].getint("affinity") 
+            if affinity is not None and affinity is not -1:
+                logger.info(f"Setting affinity to {self.config['cpu'].getint('affinity')}")
+                os.sched_setaffinity(0, [self.config["cpu"].getint("affinity")])
+
+        self.data_dir = self.config["acquire"].get("root_dir")
+        if self.data_dir is None:
+            logger.critical("Missing root_dir in config")
+            sys.exit(1)
+
         logger.info(f"Using root directory {self.data_dir}")
         if not os.path.isdir(self.data_dir):
             logger.info(f"Creating root directory {self.data_dir}")
