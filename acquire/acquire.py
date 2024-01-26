@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
 import traceback
 import serial
 import hbcapture as hb
-from hbcapture.capture import CaptureFileMetadata, CaptureFileWriter
-from hbcapture.data import DataPoint
 import configparser
 import signal
 import numpy as np
@@ -27,6 +23,15 @@ from minio import Minio
 from minio.commonconfig import Tags
 from minio.error import S3Error
 from serial.serialutil import SerialException
+from twisted.internet import protocol, reactor, endpoints
+from hbcapture.capture import CaptureFileMetadata, CaptureFileWriter
+from hbcapture.data import DataPoint
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from prometheus_client.twisted import MetricsResource
+from prometheus_client import Gauge
+from twisted.web.server import Site
+from twisted.web.resource import Resource
 
 class Singleton(type):
     _instances = {}
@@ -113,8 +118,8 @@ class HeartbeatStorage:
             while len(self.upload_queue) > 0:
                 source_path, target_path, callback = self.upload_queue[0]
                 try:
-                    # self.client.fput_object(self.bucket, target_path, source_path)
-                    logger.info(f"Uploaded {source_path} to {self.bucket}")
+                    self.client.fput_object(self.bucket, target_path, source_path)
+                    logger.info(f"Uploaded {source_path} to {self.bucket} at {target_path}")
                     self.upload_queue.pop(0)
                     if callback:
                         thread = threading.Thread(target=callback, daemon=True, args=[source_path])
@@ -144,20 +149,25 @@ class HeartbeatStorage:
 
 
 
-class StatusManager:
+class StatusReporter:
 
     def __init__(self):
         self.logger = logging.getLogger("hb.acq.status")
 
     def start(self):
-        self.logger.info("Starting status manager")
+        self.logger.info("Starting status reporter")
         self.status_thread = threading.Thread(target=self.reporter_thread, daemon=True)
         self.status_thread.start()
 
+    def is_up(self):
+        return self.status_thread.is_alive
+
     def reporter_thread(self): 
-        while True:
-            self.logger.info("Sleeping for 5 seconds")
-            time.sleep(5)
+        root = Resource()
+        root.putChild(b'metrics', MetricsResource())
+        factory = Site(root)
+        reactor.listenTCP(8003, factory)
+        reactor.run(installSignalHandlers=False)
 
 
 class HeartbeatApp(metaclass=Singleton):
@@ -250,6 +260,11 @@ class HeartbeatApp(metaclass=Singleton):
         self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}_csv'), metadata=self.metadata)
         self.writer.open()
 
+        self.status = StatusReporter()
+        self.status.start()
+
+        self.g= Gauge('gps_satellite_count', 'Description of gauge')
+
         self.is_ready = True
         logger.info("Ready for data acquisition")
         
@@ -301,6 +316,9 @@ class HeartbeatApp(metaclass=Singleton):
         self.is_clipping = line.is_clipping()
         self.has_gps_fix = line.has_gps_fix()
 
+        # Update status
+        self.g.set(line.satellites)
+
         # Check on sample rate
         if self.sample_rate == -1:
             self.sample_rate = line.sample_rate
@@ -320,11 +338,11 @@ class HeartbeatApp(metaclass=Singleton):
         self.lines_written += 1
 
         # rotate files as desired
-        if self.lines_written % 5 == 0:
+        if self.lines_written % 60 * 5 == 0:
             logger.info(f"Moving to new file, {self.lines_written} lines written")
             self.writer.close()
             filename = os.path.basename(self.writer.path)
-            self.storage.upload(self.writer.path, os.path.join(self.node_id, filename), gzip_this)
+            self.storage.upload(self.writer.path, "/"+os.path.join(self.node_id, filename), gzip_this)
             time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}.csv'), metadata=self.metadata)
             self.writer.open()
