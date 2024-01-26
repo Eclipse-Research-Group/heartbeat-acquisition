@@ -35,7 +35,7 @@ Adafruit_GPS GPS(&GPSSerial);
 bool GPS_fix = false;
 
 // Serial port to raspberry pi
-#define AcqSerial Serial
+#define AcqSerial Serial1
 
 // Capture variables
 bool capture_did_clip = false;
