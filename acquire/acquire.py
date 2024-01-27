@@ -16,7 +16,7 @@ import threading
 import argparse
 import sdnotify
 import uuid
-from time import sleep
+from time import perf_counter, perf_counter_ns, sleep
 from google.cloud import storage
 from colorama import Fore, Back, Style
 from minio import Minio
@@ -29,7 +29,7 @@ from hbcapture.data import DataPoint
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from prometheus_client.twisted import MetricsResource
-from prometheus_client import Gauge
+from prometheus_client import Gauge, Histogram
 from twisted.web.server import Site
 from twisted.web.resource import Resource
 
@@ -263,7 +263,8 @@ class HeartbeatApp(metaclass=Singleton):
         self.status = StatusReporter()
         self.status.start()
 
-        self.g= Gauge('gps_satellite_count', 'Description of gauge')
+        self.p_sat_count = Gauge('gps_satellite_count', 'Description of gauge', ["node_id"])
+        self.p_tick_time = Histogram('heartbeat_tick_time', 'Description of histogram', ["node_id"])
 
         self.is_ready = True
         logger.info("Ready for data acquisition")
@@ -290,6 +291,7 @@ class HeartbeatApp(metaclass=Singleton):
             return
             # sys.exit(1)
 
+        self.tick_start = perf_counter_ns()
 
         try: 
             serial_line = serial_line.decode("utf-8").strip()
@@ -317,7 +319,8 @@ class HeartbeatApp(metaclass=Singleton):
         self.has_gps_fix = line.has_gps_fix()
 
         # Update status
-        self.g.set(line.satellites)
+        self.p_sat_count.labels(self.node_id)
+        self.p_sat_count.labels(self.node_id).set(line.satellites)
 
         # Check on sample rate
         if self.sample_rate == -1:
@@ -346,6 +349,14 @@ class HeartbeatApp(metaclass=Singleton):
             time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.writer = CaptureFileWriter(path=os.path.join(self.data_dir, f'{self.node_id}_{time}_{self.capture_id.hex[:8]}.csv'), metadata=self.metadata)
             self.writer.open()
+
+        self.tick_end = perf_counter_ns()
+
+        self.p_tick_time.labels(self.node_id).observe((self.tick_end - self.tick_start))
+
+        logger.debug(f"Tick took {(self.tick_end - self.tick_start) / 1000000} ms")
+
+        # logger.debug(f"Tick took {(self.tick_end - self.tick_start) / 1000000} ms")
 
     def shutdown(self):
         if not self.is_ready:

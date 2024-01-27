@@ -1,6 +1,5 @@
 colorama==0.4.6
-heartbeat_capture==0.3.0
-heartbeat_capture.egg==info
+heartbeat_capture==0.7.1
 matplotlib==3.8.2
 minio==7.2.3
 numpy==1.26.3
@@ -10,3 +9,4 @@ pyserial==3.5
 sdnotify==0.3.2
 Twisted==23.10.0
 urllib3==2.1.0
+google-cloud-storage==2.14.0
